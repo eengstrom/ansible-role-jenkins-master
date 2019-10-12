@@ -1,0 +1,38 @@
+---
+
+# Jenkins must be running in order to install plugins from the internet, but
+# we should put it into quiet mode immediately to avoid any jobs being
+# scheduled.
+# - include_tasks: "start.yml"
+# - include_tasks: "set-quiet-mode.yml"
+
+- name: install plugins
+  jenkins_plugin:
+    name: "{{ item }}"
+    jenkins_home: "{{ jenkins_home }}"
+    url: "{{ jenkins_url }}:{{ jenkins_port }}"
+    owner: "{{ jenkins_config_owner }}"
+    group: "{{ jenkins_config_group }}"
+    state: "{{ jenkins_plugin_state }}"
+    with_dependencies: "{{ jenkins_plugins_install_dependencies }}"
+    url_username: "{{ jenkins_admin_username }}"
+    url_password: "{{ jenkins_admin_password }}"
+    timeout: "{{ jenkins_plugin_timeout }}"
+  with_items: "{{ jenkins_standard_plugins | union(jenkins_user_plugins) }}"
+  notify:
+    - safe_restart_jenkins
+    # - debug_handler
+
+- name: install "custom" plugins
+  copy:
+    src: "{{ item }}"
+    dest: "{{ jenkins_home }}/plugins/"
+    owner: "{{ jenkins_config_owner }}"
+    group: "{{ jenkins_config_group }}"
+    mode: 0644
+  with_items: "{{ jenkins_custom_plugins }}"
+  when: jenkins_custom_plugins is defined
+  notify:
+    - safe_restart_jenkins
+
+- meta: flush_handlers

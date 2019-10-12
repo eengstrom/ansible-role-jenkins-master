@@ -1,0 +1,105 @@
+---
+
+# https://wiki.jenkins.io/display/JENKINS/Slave+To+Master+Access+Control
+# Why on earth is this in it's own file?
+# And changes require restart to reload. Bah.
+- name: enable agent -> master access control
+  tags: master
+  copy:
+    dest: "{{ jenkins_home }}/secrets/slave-to-master-security-kill-switch"
+    content: "false"
+  notify:
+    - safe_restart_jenkins
+
+# It's freaking private field, so special shenanigans required to change.
+# on disk, this setting is in jenkins/hudson.scm.SubversionSCM.xml
+- name: set subversion plugin workspace format
+  jenkins_script:
+    script: "{{ lookup('file', 'scripts/set-svn-repo-format.groovy') }}"
+    args:
+      jenkins_svn_format: "{{ jenkins_svn_workspace_format | d(omit) }}"
+    user: "{{ jenkins_admin_username }}"
+    password: "{{ jenkins_admin_password }}"
+  when:
+    - jenkins_svn_workspace_format is defined
+  register: script_result
+  changed_when: script_result.output is search(" Changes [1-9][0-9]* = ")
+  failed_when: script_result.output == '' or script_result.output is search('ERROR|GroovyShell.evaluate')
+  notify:
+    - reload_jenkins_config
+
+- name: update system configuration parameters
+  jenkins_script:
+    script: "{{ lookup('file', 'scripts/update-jenkins-config-values.groovy') }}"
+    args:
+      conf_subsystem: "{{ item.key.split(':')[0] }}"
+      conf_key:       "{{ item.key.split(':')[1] }}"
+      conf_value:     "{{ item.value }}"
+    user: "{{ jenkins_admin_username }}"
+    password: "{{ jenkins_admin_password }}"
+  with_items: "{{ jenkins_system_settings | combine(jenkins_system_local_settings) | dict2items }}"
+  register: script_result
+  changed_when: script_result.output is search(" Changes [1-9][0-9]* = ")
+  failed_when: script_result.output == '' or script_result.output is search('ERROR|GroovyShell.evaluate')
+  notify:
+    - sareload_jenkins_config
+
+- meta: flush_handlers
+
+# - name: debug jenkins configuration updates
+#   tags: never,debug
+#   debug:
+#     msg: "{{ script_result }}"
+
+# ----------------------------------
+#  REST IS OF HISTORICAL VALUE ONLY
+# ----------------------------------
+# these are just ideas I was bouncing around when trying to find format for the dictionary of changes.
+
+# https://docs.ansible.com/ansible/latest/plugins/lookup/subelements.html
+# https://stackoverflow.com/questions/42167747/how-to-loop-over-this-dictionary-in-ansible
+# https://stackoverflow.com/questions/54766922/iterate-over-list-of-dictionaries-with-nested-list-in-ansible
+# https://www.mattcrampton.com/blog/iterating_over_a_dict_in_a_jinja_template/
+
+# - name: update system configuration parameters
+#   vars:
+#     settings:
+#       JenkinsLocationConfiguration:
+#         URL: "http://foo.bar.com:8080/"
+#         AdminAddress: "someone@example.com"
+#       Jenkins:
+#         foo: "bar"
+#         baz: "zoo"
+#   debug:
+#     var: item
+#     # msg: "conf {{ item.key.split('.')[0] }} . {{ item.key.split('.')[1]}} is {{ item.value }}"
+#     # user: "{{ item.0.name }}"
+#     # key: "{{ lookup('file', item.1) }}"
+#   with_items: "{{ lookup('dict', settings) }}"
+#   # with_dict: "{{ settings }}"
+#   # with_subelements:
+#   #    - "{{ subsettings }}"
+#   #    - key
+#
+# - name: subelements v2
+#   vars:
+#     settings:
+#       - conf: "JenkinsLocationConfiguration"
+#         properties:
+#           - property: URL
+#             value: "http://foo.bar.com:8080/"
+#           - property: AdminAddress
+#             value: "someone@example.com"
+#       - conf: Jenkins
+#         properties:
+#           - property: foo
+#             value: bar
+#           - property: baz
+#             value: foo
+#   debug:
+#     # var: item.1
+#     msg: "conf {{ item.0 }} : {{ item.1.property }} == {{ item.1.value }}"
+#     # msg: "conf {{ item.key.split('.')[0] }} . {{ item.key.split('.')[1]}} is {{ item.value }}"
+#     # msg: "conf={{ item.0.key }} value={{ item.1 }}"
+#     # msg: "Key={{ item.0.key }} value={{ item.1 }}"
+#   loop: "{{ settings | subelements('properties') }}"

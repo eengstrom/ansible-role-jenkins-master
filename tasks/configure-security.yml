@@ -1,0 +1,27 @@
+---
+- name: "configure security; realm: {{ jenkins_security_realm }} / strategy: {{ jenkins_authorization_strategy }}"
+  jenkins_script:
+    # url: "{{ jenkins_url }}:{{ jenkins_port }}"
+    script: "{{ lookup('template', 'configure-security.groovy.j2') }}"
+    # this user/password is whatever is "current", to get access to Jenkins NOW.
+    user: "{{ jenkins_admin_username }}"
+    password: "{{ jenkins_admin_password }}"
+    validate_certs: false
+    timeout: 120
+  register: script_result
+  changed_when: script_result.output is search('Result. Security Changes Made')
+  failed_when: script_result.output == '' or script_result.output is search('ERROR|GroovyShell.evaluate')
+  notify:
+    - update_auth_credentials
+    - reload_jenkins_config
+    # - safe_restart_jenkins
+
+- name: DEBUG security configuration
+  tags: never,debug
+  # tags: always
+  debug:
+    var: script_result
+    # msg: "{{ script_result.output | d('') }}"
+  changed_when: script_result.changed | d(false)
+
+- meta: flush_handlers

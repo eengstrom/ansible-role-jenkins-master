@@ -1,1 +1,88 @@
 ---
+
+# when running groovy scripts, generally various conditions that indicate failure.
+# - ""            == script output empty, which should NEVER happen
+# - "ERROR"       == script completed, but internally decided something was off
+# - "GroovyShell" == script probably threw an exception.
+
+- name: update authentication credentials
+  listen: update_auth_credentials
+  include_tasks: "select-authentication.yml"
+
+- name: reload Jenkins configuration
+  listen: reload_jenkins_config
+  jenkins_script:
+    script: "{{ lookup('file', 'scripts/reload-jenkins.groovy') }}"
+    user: "{{ jenkins_admin_username }}"
+    password: "{{ jenkins_admin_password }}"
+  register: script_result
+  changed_when: script_result.output is search("Jenkins config reloaded")
+  failed_when: script_result.output == '' or script_result.output is search('ERROR|GroovyShell.evaluate')
+  notify: wait_for_jenkins
+
+- name: safe restart Jenkins
+  listen: safe_restart_jenkins
+  jenkins_script:
+    script: "{{ lookup('file', 'scripts/restart-jenkins.groovy') }}"
+    user: "{{ jenkins_admin_username }}"
+    password: "{{ jenkins_admin_password }}"
+  register: script_result
+  changed_when: script_result.output is search("Jenkins restart initiated")
+  failed_when: script_result.output == '' or script_result.output is search('ERROR|GroovyShell.evaluate')
+  notify: wait_for_jenkins
+
+- name: wait for Jenkins to be fully running
+  listen: wait_for_jenkins
+  uri:
+    url: "{{ jenkins_url }}:{{ jenkins_port }}"
+    url_username: "{{ jenkins_admin_username }}"
+    url_password: "{{ jenkins_admin_password }}"
+    force_basic_auth: yes
+    force: true
+  become: false
+  register: jenkins_ready
+  # Jenkins will return 503 (service unavailable) on the home page while
+  # starting (the "Please wait while Jenkins is getting ready to work" page)
+  until: jenkins_ready is success and jenkins_ready.status == 200
+  retries: 30
+  delay: 5
+  when:
+    - ( jenkins_container_state | d('started') ) == 'started'
+
+- name: immediately (hard) stop Jenkins
+  listen: hard_stop_jenkins
+  docker_container:
+    name: "{{ jenkins_docker_container_name }}"
+    image: "{{ jenkins_docker_image }}:{{ jenkins_version }}"
+    state: stopped
+  register: jenkins_stopped
+  notify: wait_until_jenkins_stopped
+
+# https://support.cloudbees.com/hc/en-us/articles/216118748-How-to-Start-Stop-or-Restart-your-Instance-
+- name: safe stop Jenkins
+  listen: safe_stop_jenkins
+  uri:
+    url: "{{ jenkins_url }}:{{ jenkins_port }}/safeExit"
+    url_username: "{{ jenkins_admin_username }}"
+    url_password: "{{ jenkins_admin_password }}"
+    force_basic_auth: yes
+    method: POST
+    return_content: yes
+    status_code: [-1, 200]  # allow -1 (connection refused)
+  become: false
+  register: jenkins_stopped
+  changed_when: jenkins_stopped.content is match('Shutting down')
+  notify: wait_until_jenkins_stopped
+
+- name: wait for Jenkins to be completely stopped
+  listen: wait_until_jenkins_stopped
+  wait_for:
+    host: "{{ jenkins_host }}"
+    port: "{{ jenkins_port }}"
+    state: stopped
+    delay: 1
+
+- name: DEBUG handler
+  listen: debug_handler
+  debug:
+    var: script_result

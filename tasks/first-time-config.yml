@@ -1,0 +1,13 @@
+---
+- name: install first-time config.xml
+  copy:
+    src: "files/first-time-config.xml"
+    dest: "{{ jenkins_home }}/config.xml"
+    mode: 0644
+    owner: "{{ jenkins_config_uid | d(jenkins_config_owner) }}"
+    group: "{{ jenkins_config_gid | d(jenkins_config_group) }}"
+  when:
+    - jenkins_first_time_setup
+  notify: update_auth_credentials
+
+- meta: flush_handlers

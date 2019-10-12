@@ -1,0 +1,7 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<!-- Initial, *no-security* config, simply to get up and running. -->
+<hudson>
+  <useSecurity>false</useSecurity>
+  <securityRealm class="hudson.security.SecurityRealm$None"/>
+  <authorizationStrategy class="hudson.security.AuthorizationStrategy$Unsecured"/>
+</hudson>

@@ -1,0 +1,20 @@
+---
+
+# Per issue:
+#   https://github.com/ansible/ansible-modules-core/issues/4371
+# `docker_image` will not update image from registry without
+# `force: true`, but with `force: true` will always notify changed.
+# Nice workaround given to check image version before pull.
+# ...
+# UPDATE: with Ansible 2.8, can simply use `force_source: true`
+# to get "proper" behavior.
+
+- name: "update image ({{ jenkins_docker_image }}:{{ jenkins_version }})"
+  docker_image:
+    name: "{{ jenkins_docker_image }}"
+    tag: "{{ jenkins_version }}"
+    source: pull
+    force_source: true
+  notify: safe_stop_jenkins
+
+- meta: flush_handlers

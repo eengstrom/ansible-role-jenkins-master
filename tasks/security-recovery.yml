@@ -1,0 +1,23 @@
+---
+- name: RECOVER access by turning off security in config.xml
+  lineinfile:
+    path: "{{ jenkins_home }}/config.xml"
+    regexp: '<useSecurity>true</useSecurity>'
+    line: '  <useSecurity>false</useSecurity>'
+  notify:
+    - hard_stop_jenkins
+    - update_auth_credentials
+
+- meta: flush_handlers
+
+# this no worky.
+# - name: remove `recover` tag from `ansible_run_tags`
+#   set_fact:
+#     # ansible_run_tags: "{{ ansible_run_tags | difference(['recover']) }}"
+#     ansible_run_tags: ['all']
+#
+# - name: check tags setup post facts update
+#   debug:
+#     msg: |
+#       {{ ansible_run_tags }}
+#       {{ ansible_skip_tags }}

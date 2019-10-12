@@ -1,0 +1,16 @@
+---
+- name: create jenkins home dir ({{ jenkins_home }})
+  file:
+    path: "{{ jenkins_home }}"
+    mode: 0775
+    owner: "{{ jenkins_config_uid | d(jenkins_config_owner) }}"
+    group: "{{ jenkins_config_gid | d(jenkins_config_group) }}"
+    state: directory
+
+- name: create jenkins secrets dir ({{ jenkins_home }}/secrets)
+  file:
+    path: "{{ jenkins_home }}/secrets"
+    mode: 0700
+    owner: "{{ jenkins_config_uid | d(jenkins_config_owner) }}"
+    group: "{{ jenkins_config_gid | d(jenkins_config_group) }}"
+    state: directory

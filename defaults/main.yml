@@ -1,1 +1,332 @@
 ---
+# Default configutaion values for role, broken into rough categories.
+#
+# Some variables are *SET* (set_fact) in the role, and *NOT*
+# expected to be set in playbooks, so read the comments carefully.
+#
+# Where passwords are specified in this role, they are for example only.
+# Suggest real playbooks use `ansible_vault` or `keyring` lookup function
+# to avoid putting passwords in clear text in your playbooks.
+
+# ---------- General ---------- #
+
+# Is this the first time jenkins is being setup?
+# *SET* during execution; not intended to be user/playbook-modified
+# jenkins_first_time_setup: false
+
+# Directory on the server/host where Jenkins' configs live;
+# will be bind-mounted into the container
+jenkins_home: /var/lib/jenkins
+
+# Configuration directory/files owner and group
+# by username/groupname, on the *host* system.
+jenkins_config_owner: "jenkins"
+jenkins_config_group: "jenkins"
+# by uid/gid, again on the *host* system.
+jenkins_config_uid: "1000"
+jenkins_config_gid: "1000"
+
+# Docker hub image name
+jenkins_docker_image: "jenkins/jenkins"
+
+# "lts" or "latest" or the exact version of the jenkins image to deploy
+jenkins_version: "lts"
+
+# Dame of the jenkins container
+jenkins_docker_container_name: jenkins
+
+# Autoremove container when it terminates?
+jenkins_container_autoremove: true
+
+# If true (default), the port will be exposed on the host (using "port")
+# If false, the port will only be exposed to other containers (using "expose")
+# jenkins_docker_expose_port: true
+
+# Exposed location of Jenkins (host/url/port):
+jenkins_host: "{{ ansible_hostname }}.{{ ansible_domain }}"
+jenkins_url: "http://{{ jenkins_host }}"
+jenkins_port: "8080"
+
+# Administrator email address for the server
+jenkins_admin_email: "jenkins@{{ ansible_domain }}"
+
+# Options to the java call, mostly to disable the normal setup wizard.
+# c.f.: https://wiki.jenkins.io/display/JENKINS/Features+controlled+by+system+properties
+jenkins_java_opts: "-Djenkins.install.runSetupWizard=false"
+
+# Miscellaneous configuration options to be set.
+# dictionary of system/model : value pairs to change; format is:
+#   '<Subsystem>:<Property>': "Value"
+# NOTE: embedded colon in name, so be sure to quote the key names.
+# Assumes that all properties have get|set<Property> accessors.
+jenkins_system_settings:
+  # 'Jenkins:SystemMessage': "Jenkins server for {{ ansible_domain | upper }}"
+  'JenkinsLocationConfiguration:Url': "{{ jenkins_url }}:{{ jenkins_port }}/"
+  'JenkinsLocationConfiguration:AdminAddress': "Jenkins Admin <{{ jenkins_admin_email }}>"
+  'hudson.tasks.Mailer:SmtpHost': "mail.{{ ansible_domain | lower }}"
+  'hudson.tasks.Mailer:DefaultSuffix': "@{{ ansible_domain | lower }}"
+
+# same thing for local configuration.
+jenkins_system_local_settings: {}
+
+# SVN (subversion) workspace format; possible options:
+#  -  8 == 1.4 (default)
+#  -  9 == 1.5
+#  - 10 == 1.6 (includes svn:externals to files)
+#  - 29 == 1.7
+#  - 31 == 1.8 (includes svn:externals to files)
+# will change only if *if set*; current default:
+#jenkins_svn_workspace_format: 8
+
+# ---------- Authentication ---------- #
+
+# Admin user/password to authenticate **as an admin**  **to jenkins**.
+# This is distinct from the username/password on the host (unix), above.
+#
+# If using basic auth (Jenkins' user database):
+# This user will be created dynamically during setup.
+jenkins_basic_auth_admin_username: 'jenkins'
+jenkins_basic_auth_admin_password: 'jenkins'
+# If using LDAP authentication.
+# This user will *NOT* be created, so set it carefully.
+jenkins_ldap_auth_admin_username: 'jenkins-ldap'
+jenkins_ldap_auth_admin_password: 'whatever-password-you-want'
+
+# This pair is *SET* within the role and should *NOT* be set in your playbooks.
+jenkins_admin_username: "{{ jenkins_basic_auth_admin_username }}"
+jenkins_admin_password: "{{ jenkins_basic_auth_admin_password }}"
+
+# Authentication method (security realm); can be:
+# NONE: no authentication (or authorization)
+#jenkins_security_realm: none
+# BASIC: use Jenkins' built-in user database (default)
+jenkins_security_realm: basic
+jenkins_security_realm_basic_allow_signup: false
+# LDAP: use external LDAP server
+#jenkins_security_realm: ldap
+
+# Configure LDAP access (LDAP security realm)
+# Defaults will likely work for most OpenLDAP systems,
+# except for manager_dn and manager_password, which need to be set
+jenkins_ldap_server:                        "ldap://ldap.{{ ansible_domain }}:389"
+jenkins_ldap_root_dn:                       "dc={{ ansible_domain.split('.') | join(',dc=') }}"  # e.g. 'dc=example,dc=com'
+jenkins_ldap_inhibit_infer_root_dn:         true
+# This is the LDAP user used to authenticate to the LDAP server
+# to be able to submit user/group queries.
+# Set both to empty ("") if your server allows anonymous queries.
+jenkins_ldap_manager_dn:                    "uid=admin,{{ jenkins_ldap_user_search_base }},{{ jenkins_ldap_root_dn }}"
+jenkins_ldap_manager_password:              'admin-user-pa$$w0rd'
+# user/group query parameters; defaults should work for OpenLDAP
+jenkins_ldap_user_search_base:              'cn=users,cn=accounts'
+jenkins_ldap_user_search_filter:            'uid={0}'
+jenkins_ldap_group_search_base:             ''
+jenkins_ldap_group_search_filter:           ''
+jenkins_ldap_display_name_attribute_name:   'displayname'
+jenkins_ldap_mail_address_attribute_name:   'mail'
+#
+# How do we determine the what groups to which the user belongs?
+# Either 'User[Record]':
+# jenkins_ldap_group_membership_strategy:   'User'   # == FromUserRecordLDAPGroupMembershipStrategy
+jenkins_ldap_group_membership_attribute:    'memberOf'
+# Or 'Group[Search]':
+jenkins_ldap_group_membership_strategy:     'Group'  # == FromGroupSearchLDAPGroupMembershipStrategy
+jenkins_ldap_group_membership_filter:       ''
+#
+# note: these are not server-specific setings:
+jenkins_ldap_disable_mail_address_resolver: false
+jenkins_ldap_disable_role_prefixing:        true
+
+# Dictionary of all the LDAP servers to be used.
+# Default is a single server with the above parameters,
+# so a simple playbook need only change a few values.
+# No two configurations may have the same
+#   - server(s),
+#   - root DN,
+#   - user search base, and
+#   - user search filter.
+# If you define a second server, need to define EVERY value,
+# even if you want it to be the "default" above.
+jenkins_ldap_configs:
+  default:
+    server_url:                    "{{ jenkins_ldap_server }}"
+    root_dn:                       "{{ jenkins_ldap_root_dn }}"
+    inhibit_infer_root_dn:         "{{ jenkins_ldap_inhibit_infer_root_dn | bool | d(true) }}"
+    manager_dn:                    "{{ jenkins_ldap_manager_dn }}"
+    manager_password:              "{{ jenkins_ldap_manager_password }}"
+    user_search_base:              "{{ jenkins_ldap_user_search_base }}"
+    user_search_filter:            "{{ jenkins_ldap_user_search_filter }}"
+    group_search_base:             "{{ jenkins_ldap_group_search_base }}"
+    group_search_filter:           "{{ jenkins_ldap_group_search_filter }}"
+    group_membership_strategy:     "{{ jenkins_ldap_group_membership_strategy }}"
+    group_membership_attribute:    "{{ jenkins_ldap_group_membership_attribute }}"
+    group_membership_filter:       "{{ jenkins_ldap_group_membership_filter }}"
+    display_name_attribute_name:   "{{ jenkins_ldap_display_name_attribute_name }}"
+    mail_address_attribute_name:   "{{ jenkins_ldap_mail_address_attribute_name }}"
+# Example of second server, with example differences:
+  # testing:
+  #   server_url:                    "ldaps://test.example.com:389"
+  #   root_dn:                       "{{ jenkins_ldap_root_dn }}"
+  #   inhibit_infer_root_dn:         "{{ jenkins_ldap_inhibit_infer_root_dn | bool | d(true) }}"
+  #   manager_dn:                    "manager"
+  #   manager_password:              "MANAGER-password-string-in-the-clear"
+  #   user_search_base:              "{{ jenkins_ldap_user_search_base }}"
+  #   user_search_filter:            "{{ jenkins_ldap_user_search_filter }}"
+  #   group_search_base:             "{{ jenkins_ldap_group_search_base }}"
+  #   group_search_filter:           "{{ jenkins_ldap_group_search_filter }}"
+  #   group_membership_filter:       "{{ jenkins_ldap_group_membership_filter }}"
+  #   group_membership_strategy:     "{{ jenkins_ldap_group_membership_strategy }}"
+  #   group_membership_attribute:    "{{ jenkins_ldap_group_membership_attribute }}"
+  #   group_membership_filter:       "{{ jenkins_ldap_group_membership_filter }}"
+  #   display_name_attribute_name:   "{{ jenkins_ldap_display_name_attribute_name }}"
+  #   mail_address_attribute_name:   "{{ jenkins_ldap_mail_address_attribute_name }}"
+
+# ---------- Authorization ---------- #
+
+# Authorization / permissions stategy; options:
+# UNSECURED: any user can do anything
+#jenkins_authorization_strategy: 'unsecured'
+# FULL-CONTRIOL: any *authenticated* user can do anything
+jenkins_authorization_strategy: 'full-control'
+jenkins_authorization_strategy_allow_anonymous_read: false
+# MATRIX: fine-grained permissions; c.f.:
+#  - https://wiki.jenkins.io/display/JENKINS/Matrix-based+security
+#jenkins_authorization_strategy: 'project-matrix'
+#jenkins_authorization_strategy: 'global-matrix'
+
+# List admin-/normal-user permissions when in matrix mode; c.f.:
+#  - https://wiki.jenkins.io/display/JENKINS/Matrix-based+security
+jenkins_matrix_auth_admin_permissions:
+  # Administration
+  - "hudson.model.Hudson.Administer"
+  - "hudson.model.Hudson.Read"
+  # "DANGEROUS_PERMISSIONS" - not generally enabled.
+  # Equivalent to Adminstration (i.e. don't give to normal users)
+  # - "hudson.model.Hudson.RunScripts"
+  # - "hudson.model.Hudson.UploadPlugins"
+  # - "hudson.model.Hudson.ConfigureUpdateCenter"
+  # Credentials Plug-in
+  - "com.cloudbees.plugins.credentials.CredentialsProvider.Create"
+  - "com.cloudbees.plugins.credentials.CredentialsProvider.Delete"
+  - "com.cloudbees.plugins.credentials.CredentialsProvider.ManageDomains"
+  - "com.cloudbees.plugins.credentials.CredentialsProvider.Update"
+  - "com.cloudbees.plugins.credentials.CredentialsProvider.View"
+  # Agent/Slave
+  - "hudson.model.Computer.Build"
+  - "hudson.model.Computer.Configure"
+  - "hudson.model.Computer.Connect"
+  - "hudson.model.Computer.Create"
+  - "hudson.model.Computer.Delete"
+  - "hudson.model.Computer.Disconnect"
+  # Lockable Resource Plug-in
+  - "org.jenkins.plugins.lockableresources.LockableResourcesManager.Reserve"
+  - "org.jenkins.plugins.lockableresources.LockableResourcesManager.Unlock"
+
+jenkins_matrix_auth_user_permissions:
+  # Job
+  - "hudson.model.Item.Build"
+  - "hudson.model.Item.Cancel"
+  - "hudson.model.Item.Configure"
+  - "hudson.model.Item.Create"
+  - "hudson.model.Item.Delete"
+  - "hudson.model.Item.Discover"
+  - "hudson.model.Item.Move"
+  - "hudson.model.Item.Read"
+  - "hudson.model.Item.Workspace"
+  # Run
+  - "hudson.model.Run.Delete"
+  - "hudson.model.Run.Replay"
+  - "hudson.model.Run.Update"
+  # View
+  - "hudson.model.View.Configure"
+  - "hudson.model.View.Create"
+  - "hudson.model.View.Delete"
+  - "hudson.model.View.Read"
+  # SCM
+  - "hudson.scm.SCM.Tag"
+
+# ALL permissions (simple union of "admin" and "user" lists)
+jenkins_matrix_auth_all_permissions: "{{
+  jenkins_matrix_auth_admin_permissions
+  + jenkins_matrix_auth_user_permissions
+}}"
+
+# Dictionary of `id : [ permissions, ...]` to be set in matrix strategy
+# Use `anonymous` or `authenticated` for `id` to configure those pseudo-ids.
+# Note use of `~ADMIN~` placehoder in this default,
+# to work around ansible's not templating the keys; c.f.:
+#  - https://github.com/ansible/ansible/pull/19664
+#  - https://github.com/ansible/ansible/issues/17324
+# Chose the placeholder over trying to use JINJA templating for the var itself.
+jenkins_matrix_auth_permissions:
+  '~ADMIN~': "{{ jenkins_matrix_auth_all_permissions }}"
+  authenticated: "{{ jenkins_matrix_auth_user_permissions }}"
+
+# Should we prune *ALL* authorizations *NOT* in the above dictionary?
+# Default is `false`, which means the list above is only ADDITIVE,
+# and any changes made via the GUI will remain unchanged.
+# If `true`, ONLY permissions in the dictionary will be retained.
+jenkins_matrix_auth_prune: false
+
+# ---------- Plugins ---------- #
+
+# When installing jenkins plugins, use 'present' (default).
+# 'latest' => always upgrade plugins EXPLICITLY INSTALED by this role.
+jenkins_plugin_state: present
+
+# How long to wait for installing plugins, in seconds.
+# May need to increase if you see failures; e.g.:
+#   "Timeout when waiting for file <PLUGIN.jpi>"
+jenkins_plugin_timeout: 300
+
+# Install plugin dependencies (default: true)
+jenkins_plugins_install_dependencies: true
+
+# Standard install, "suggested"/default plugins.
+# I've taken a few out that I don't think are truely generic.
+# Override if you must, otherwise see "jenkins_local_plugins"
+jenkins_standard_plugins:
+  # - ant                        # Ant Plugin
+  - antisamy-markup-formatter    # OWASP Markup Formatter Plugin
+  - build-timeout                # Build Timeout
+  - cloudbees-folder             # Folders Plugin
+  - credentials                  # Credentials Plugin
+  - credentials-binding          # Credentials Binding Plugin
+  - email-ext                    # Email Extension Plugin
+  - git                          # Git plugin
+  - github                       # GitHub plugin
+  - github-api                   # GitHub API Plugin
+  - github-branch-source         # GitHub Branch Source Plugin
+  - ldap                         # LDAP Plugin
+  # - pam-auth                   # PAM Authentication plugin
+  - mailer                       # Mailer Plugin
+  - matrix-auth                  # Matrix Authorization Strategy Plugin
+  # - matrix-project             # Matrix Project Plugin
+  - workflow-aggregator          # Pipeline
+  - pipeline-github-lib          # Pipeline: GitHub Groovy Libraries
+  - pipeline-stage-view          # Pipeline: Stage View Plugin
+  # - ssh-agent                  # SSH Agent Plugin
+  - ssh-credentials              # SSH Credentials Plugin
+  - ssh-slaves                   # SSH Slaves plugin
+  - subversion                   # Subversion Plug-in
+  - timestamper                  # Timestamper
+  - ws-cleanup                   # Workspace Cleanup
+
+# "local" installation plugins; intended to be set by role user
+# Lots to chose from; some opinions:
+# - https://caylent.com/jenkins-plugins
+jenkins_user_plugins: []
+  # - authorize-project           # Authorize Project
+  # - dashboard-view              # Dashboard View
+  # - gradle                      # Gradle Plugin
+  # - monitoring                  # Monitoring
+  # - log-parser
+  # - copyartifact
+  # - template-project
+
+# "custom" (from source) plugins
+jenkins_custom_plugins: []
+
+# Note: get list of installed plugin via ssh access:
+#   ssh -l USERNAME -p PORT jenkins.domain list-plugins | sort
+# other ways:
+#  - https://stackoverflow.com/questions/9815273/how-to-get-a-list-of-installed-jenkins-plugins-with-name-and-version-pair

@@ -1,0 +1,318 @@
+#!groovy
+import jenkins.model.*
+import hudson.security.*
+// import hudson.plugins.active_directory.*
+
+def changes = []
+def instance = Jenkins.getInstance()
+
+def old_realm = instance.getSecurityRealm()
+def old_strategy = instance.getAuthorizationStrategy()
+
+def new_realm = null
+def new_strategy = null
+
+// Return value of `fn()`, or `val` if call to fn arg would throw ANY exception.
+// Sure, could use `?.` of groovy, but only if the object itself was null.
+def orValue = { fn, val -> try { return fn.call() } catch (e) { return val } }
+// Shortcut to return null or `fn()` return value.
+def orNull = { fn -> orValue.call(fn, null) }
+
+// Check value of field, updating if not the right value.
+// Uses Groovy's ability to treat objects as maps but get / set via accessors.
+def checkAndSet = { obj, key, value ->
+  if (obj["${key}"] != null && obj["${key}"] != value) {
+    obj["${key}"] = value
+    changes << "Changed '" + obj.getClass().toString() + ".${key}' -> '${value}'"
+  }
+}
+
+// ---------- Authentication Realm ---------- //
+// NO SECURITY - probably a bad idea, but ...
+{% if jenkins_security_realm == "none" %}
+  new_realm = (
+    //( old_realm instanceof hudson.security.SecurityRealm.None )
+    ( old_realm.getClass().getName() == 'hudson.security.SecurityRealm$None' )
+    ? old_realm
+    : { new hudson.security.SecurityRealm.None() }.call()
+  )
+
+// BASIC, Jenkins internal authentication
+{% elif jenkins_security_realm == "basic" %}
+  new_realm = (
+    ( old_realm instanceof HudsonPrivateSecurityRealm
+      && old_realm.allowsSignup() == {{ jenkins_security_realm_basic_allow_signup | bool | lower }} )
+    ? old_realm
+    : { new HudsonPrivateSecurityRealm( {{ jenkins_security_realm_basic_allow_signup | bool | lower }} ) }.call()
+  )
+
+  // Now check that we have an admin user, with the correct password.
+  def admin_user = orNull({new_realm.loadUserByUsername( '{{ jenkins_basic_auth_admin_username }}' )})
+  if (admin_user == null) {
+    new_realm.createAccount('{{ jenkins_basic_auth_admin_username }}',
+                            '{{ jenkins_basic_auth_admin_password }}')
+    changes << "Created basic-auth local admin user ({{ jenkins_basic_auth_admin_username }})"
+  } else if (! admin_user.isPasswordCorrect( '{{ jenkins_basic_auth_admin_password }}' )) {
+    def user = hudson.model.User.get('{{ jenkins_admin_username }}');
+    def password = hudson.security.HudsonPrivateSecurityRealm.Details.fromPlainPassword('{{ jenkins_admin_password }}')
+    user.addProperty(password)
+    user.save()
+    changes << "Updated basic-auth local admin user ({{ jenkins_basic_auth_admin_username }})"
+  }
+
+// LDAP authentication
+{% elif jenkins_security_realm == "ldap" %}
+
+  // Have to update/create LDAPServerConfiguration(s) first //
+
+  // get LDAP (current) server configurations, or create new collection
+  def ldap_servers = (
+    ( old_realm instanceof LDAPSecurityRealm )
+    ? old_realm.getConfigurations()
+    : new ArrayList<jenkins.security.plugins.ldap.LDAPConfiguration>()
+  )
+
+  // convert nested config from ansible/yaml dictionary to groovy map
+  def ldap_configs_map = [
+    {% for server in jenkins_ldap_configs %}
+      {{ server }}: [
+      {% for key,value in jenkins_ldap_configs[server].items() %}
+        {{ key }}: '{{ value }}',
+      {% endfor %}
+      ],
+    {% endfor %}
+  ]
+
+  updated_servers = new ArrayList<jenkins.security.plugins.ldap.LDAPConfiguration>()
+  ldap_configs_map.each{ server, confmap ->
+    // find existing matching server config;
+    // no two configurations may have the same
+    //  - server(s),
+    //  - root DN,
+    //  - user search base, and
+    //  - user search filter
+    // Also check managerDN and managerPW, since can't change outside of constructor; ugh.
+    // PLUS, note ` v ?: '' ` work around for null values in place of empty strings; ugh^2.
+    conf = ldap_servers.find { lc ->
+              (    (lc.getServerUrl()       ?: '') == confmap['server_url']
+                && (lc.getRootDN()          ?: '') == confmap['root_dn']
+                && (lc.getUserSearchBase()  ?: '') == confmap['user_search_base']
+                && (lc.getUserSearch()      ?: '') == confmap['user_search_filter']
+                && (lc.getManagerDN()       ?: '') == confmap['manager_dn']
+                && (lc.getManagerPassword() ?: '') == confmap['manager_password']
+              )
+            }
+
+    // if no conf found in existing list, then create a new one
+    if (conf == null) {
+      conf = new jenkins.security.plugins.ldap.LDAPConfiguration(
+               confmap['server_url'],
+               confmap['root_dn'],
+               confmap['inhibit_infer_root_dn'].toBoolean(),
+               confmap['manager_dn'],
+               new hudson.util.Secret(confmap['manager_password'])
+             )
+      changes << "Created new LDAPConfiguation for: " + confmap['server_url']
+    }
+
+    // Change remaining paramters, as needed;
+    // Wish there were accessors for ALL the fields; seems broken to not do so.
+    checkAndSet( conf, 'userSearchBase',           confmap['user_search_base'] )
+    checkAndSet( conf, 'userSearch',               confmap['user_search_filter'] )
+    checkAndSet( conf, 'groupSearchBase',          confmap['group_search_base'] )
+    checkAndSet( conf, 'groupSearchFilter',        confmap['group_search_filter'] )
+    checkAndSet( conf, 'displayNameAttributeName', confmap['display_name_attribute_name'] )
+    checkAndSet( conf, 'mailAddressAttributeName', confmap['mail_address_attribute_name'] )
+
+    // Set/Update LDAPGroupMembershipStrategy
+    def member_strategy = new_member_strategy = conf.getGroupMembershipStrategy()
+    if (confmap['group_membership_strategy'] ==~ /(?i)User.*/) {
+      if (! ( member_strategy instanceof jenkins.security.plugins.ldap.FromUserRecordLDAPGroupMembershipStrategy
+              && (member_strategy.getAttributeName() ?: '') == confmap['group_membership_attribute'] ) ) {
+        new_member_strategy = new jenkins.security.plugins.ldap.FromUserRecordLDAPGroupMembershipStrategy(confmap['group_membership_attribute'])
+      }
+    } else if (confmap['group_membership_strategy'].matches("Group")) {
+      if (! ( member_strategy instanceof jenkins.security.plugins.ldap.FromGroupSearchLDAPGroupMembershipStrategy
+              && (member_strategy.getFilter() ?: '') == confmap['group_membership_filter'] ) ) {
+        new_member_strategy = new jenkins.security.plugins.ldap.FromGroupSearchLDAPGroupMembershipStrategy(confmap['group_membership_filter'])
+      }
+    } else {
+      return "ERROR: unknown membership strategy: " + confmap['group_membership_strategy']
+    }
+    // Check/Set the group membership strategy
+    checkAndSet( conf, 'groupMembershipStrategy', new_member_strategy )
+
+    // add new (or existing) server config updated servers list
+    updated_servers.add(conf)
+  }
+
+  // Check for identity equality (of the elements in the lists)
+  // and update the full list if not equal.
+  if (updated_servers != ldap_servers) {
+    ldap_servers.clear()
+    updated_servers.each{ ldap_servers.add(it) }
+    changes << "Updated LDAP Server Configuations"
+  }
+
+  // Now, with LDAPConfigurations in hand, Create/Update the LDAPSecurityRealm //
+
+  // parameters set only during constructor - ugh.
+  def disable_mail_address_resolver = {{ jenkins_ldap_disable_mail_address_resolver | bool | lower }}
+
+  // old or new realm?
+  new_realm = (
+    ( old_realm instanceof LDAPSecurityRealm
+      && old_realm.disableMailAddressResolver == disable_mail_address_resolver )
+    ? old_realm
+    : { new LDAPSecurityRealm( ldap_servers,         // List<LDAPConfiguration>
+                               disable_mail_address_resolver, // boolean
+                               null,                          // LDAPSecurityRealm.CacheConfiguration
+                               IdStrategy.CASE_INSENSITIVE,   // userIdStrategy
+                               IdStrategy.CASE_INSENSITIVE,   // groupIdStrategy
+                              ) }.call()
+  )
+
+  // set "DisableRolePrefixing" on realm
+  disable_role_prefixing = {{ jenkins_ldap_disable_role_prefixing | bool | lower }}
+  if ( new_realm.isDisableRolePrefixing() != disable_role_prefixing ) {
+    new_realm.setDisableRolePrefixing( disable_role_prefixing )
+    changes << "Changed LDAPSecurityRealm.DisableRolePrefixing: " + disable_role_prefixing.toString()
+  }
+
+{% else %}
+  return "ERROR: unknown security realm '{{ jenkins_security_realm }}'"
+
+{% endif %}
+
+// ---------- Authorization Strategy ---------- //
+// I dislike this, but for the purposes of allowing changes, we'll support it.
+{% if ( jenkins_authorization_strategy == "unsecured"
+        or jenkins_security_realm == "none" ) %}
+  new_strategy = (
+    ( old.getClass().getName() == "hudson.security.AuthorizationStrategy$Unsecured" )
+    ? old_strategy
+    : { new hudson.security.AuthorizationStrategy.Unsecured() }.call()
+  )
+
+{% elif jenkins_authorization_strategy == "legacy" %}
+  // Legacy mode is NOT supported - if you want it, you are doing something wrong.
+  return "ERROR: 'legacy' authorization strategy not allowed"
+  // new_strategy = (
+  //   ( old_strategy instanceof LegacyAuthorizationStrategy )
+  //   ? old_strategy
+  //   : { new LegacyAuthorizationStrategy() }.call()
+  // )
+
+{% elif jenkins_authorization_strategy == "full-control" %}
+  new_strategy = (
+    ( old_strategy instanceof FullControlOnceLoggedInAuthorizationStrategy )
+    ? old_strategy
+    : { new FullControlOnceLoggedInAuthorizationStrategy() }.call()
+  )
+
+  allow_anon_read = {{ jenkins_authorization_strategy_allow_anonymous_read | bool | lower }}
+  if ( new_strategy.isAllowAnonymousRead() != allow_anon_read ) {
+    new_strategy.setAllowAnonymousRead( allow_anon_read )
+    changes << "Changed FullControl.AllowAnonymousRead: " + allow_anon_read.toString()
+  }
+
+  {% elif ( jenkins_authorization_strategy == "global-matrix"
+         or jenkins_authorization_strategy == "project-matrix" ) %}
+
+  strategy_class = ( ( "{{ jenkins_authorization_strategy }}" ==~ "(?i)project.*" )
+                       ? ProjectMatrixAuthorizationStrategy
+                       : GlobalMatrixAuthorizationStrategy )
+
+  // Create a new strategy if it's not the same type
+  new_strategy = (
+    (old_strategy.getClass() == strategy_class)
+    ? old_strategy
+    : { strategy_class.newInstance() }.call()
+  )
+
+  // carry forward old permissions
+  if (new_strategy != old_strategy
+      && old_strategy instanceof GlobalMatrixAuthorizationStrategy) {
+    old_strategy.getGrantedPermissions().each { permission, ids ->
+      ids.each { new_strategy.add(permission, it) }
+    }
+    changes << "Retained old permissions already granted under previous matrix-strategy"
+  }
+
+  // convert permissions config from ansible/yaml dictionary to groovy map
+  def matrix_perms = [
+    {% for id in jenkins_matrix_auth_permissions %}
+      '{{ id }}': [
+      {% for perm in jenkins_matrix_auth_permissions[id] %}
+        '{{ perm }}',
+      {% endfor %}
+      ],
+    {% endfor %}
+  ]
+
+  // get the current permissions, or an empty map
+  old_permissions = orValue( { old_strategy.getGrantedPermissions() }, [:] )
+
+  // **ADD** all the new permissions
+  matrix_perms.each { member, perms_list ->
+    id = ((member == '~ADMIN~') ? "{{ jenkins_admin_username }}" : member)
+    perms_list.each { perm_name ->
+      perm = Permission.fromId(perm_name)
+      if (! old_permissions[perm]?.contains(id)) {
+        new_strategy.add(perm, id)
+        changes << "Added permission '${id}' -> '${perm_name}'"
+      }
+    }
+  }
+
+  // *PRUNE* permissions not specified in the dictionary
+  {% if jenkins_matrix_auth_prune %}
+    new_strategy.getGrantedPermissions().each { perm, members ->
+      perm_name = perm.getId()
+      members.clone().each { member ->
+        id = ((member == "{{ jenkins_admin_username }}") ? '~ADMIN~' : member)
+        if (! matrix_perms[id]?.contains(perm_name)) {
+          members.remove(member)
+          changes << "Pruned permission '${member}' -> '${perm_name}'"
+        }
+      }
+    }
+  {% endif %}
+
+{% elif ( jenkins_authorization_strategy == "rbac" ) %}
+  // might look at this for ideas, if we ever need to do it
+  //   https://github.com/cloudbees/jenkins-scripts/blob/master/RBAC_Example.groovy
+  return "ERROR: 'rbac' authorization strategy not supported, yet."
+
+{% else %}
+  return "ERROR: unknown authorization strategy '{{ jenkins_authorization_strategy }}'"
+
+{% endif %}
+
+// ---------- Save Configuation Changes ---------- //
+
+
+if ( new_realm != null && new_strategy != null ) {
+
+  if (new_realm != old_realm) {
+    instance.setSecurityRealm(new_realm)
+    changes << "Changed Security Realm ({{ jenkins_security_realm }})"
+  }
+
+  if (new_strategy != old_strategy) {
+    instance.setAuthorizationStrategy(new_strategy)
+    changes << "Changed Authorization Strategy ({{ jenkins_authorization_strategy }})"
+  }
+
+  if (changes.size() >= 1) {
+    // Only if looks good and we made changes do we save the changes
+    instance.save()
+    // return changes made
+    return "Security Changes Made: " + changes.size() + " = [ \n - " + changes.join(',\n - ') + "\n]"
+  } else {
+    return "NO Security Changes Made."
+  }
+
+}
+
+return "ERROR: changes to security failed..."

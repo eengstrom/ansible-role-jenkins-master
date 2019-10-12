@@ -1,0 +1,8 @@
+---
+- name: install python `docker` packge via pip
+  # vars:
+  #   # https://docs.ansible.com/ansible/latest/reference_appendices/python_3_support.html
+  #   - ansible_python_interpreter: /usr/bin/python3
+  pip:
+    name: docker
+    state: present

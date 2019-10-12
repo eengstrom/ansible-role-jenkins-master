@@ -1,1 +1,25 @@
 ---
+- include: "prechecks.yml"
+- include: "prerequisites.yml"
+- include: "directory.yml"
+- include: "first-time-config.yml"
+
+- include: "security-recovery.yml"
+  tags: never,recover
+
+- include: "select-authentication.yml"
+
+- include: "fetch-image.yml"
+  tags: image
+
+- include: "container.yml"
+  tags: start
+
+- include: "install-plugins.yml"
+  tags: plugins
+
+- include: "update-configs.yml"
+  tags: config
+
+- include: "configure-security.yml"
+  tags: security

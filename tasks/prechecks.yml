@@ -1,0 +1,20 @@
+---
+- name: check if jenkins already configured
+  stat:
+    path: "{{ jenkins_home }}/config.xml"
+  check_mode: yes
+  tags: always
+  register: config_file_stat
+
+- name: set_fact jenkins_first_time_setup
+  set_fact:
+     jenkins_first_time_setup: "{{ not config_file_stat.stat.exists | bool }}"
+  check_mode: yes
+  changed_when: jenkins_first_time_setup
+  tags: always
+
+# - name: DEBUG prechecks
+#   tags: never,debug
+#   debug:
+#     msg: |
+#       first-time: {{ jenkins_first_time_setup }}

@@ -1,0 +1,60 @@
+---
+# Determine the CURRENT security model and set facts for authentication credentials.
+# This allows us to change from one security realm to another.
+
+- name: "fetch current security realm information"
+  slurp:
+    src: "{{ jenkins_home }}/config.xml"
+  check_mode: yes
+  tags: always
+  failed_when: false
+  register: config_file_slurp
+
+- name: "determine intermediate security realm facts"
+  set_fact:
+    _j_old_realm: "{{ _j_new_realm | d('') }}"
+    _j_new_realm: "{{ config_file_slurp.content | d('') | b64decode
+                       | regex_search('<securityRealm class=\"hudson.security.([^\"]+)\"', '\\1')
+                       | d([''], true) | first
+                   }}"
+  check_mode: yes
+  tags: always
+  changed_when:
+    - (_j_old_realm != '')
+    - (_j_new_realm != _j_old_realm)
+
+- name: "update authentication credentials facts"
+  vars:
+    auth_by_type:
+      'NONE':
+        username: ''
+        password: ''
+      'SecurityRealm$None':
+        username: ''
+        password: ''
+      HudsonPrivateSecurityRealm:
+        username: "{{ jenkins_basic_auth_admin_username }}"
+        password: "{{ jenkins_basic_auth_admin_password }}"
+      LDAPSecurityRealm:
+        username: "{{ jenkins_ldap_auth_admin_username }}"
+        password: "{{ jenkins_ldap_auth_admin_password }}"
+  set_fact:
+    jenkins_admin_username: "{{ auth_by_type[_j_new_realm]['username'] | d('') }}"
+    jenkins_admin_password: "{{ auth_by_type[_j_new_realm]['password'] | d('') }}"
+  check_mode: yes
+  tags: always
+  changed_when:
+    - (_j_old_realm != '')
+    - (_j_new_realm != _j_old_realm)
+
+# - name: DEBUG authentication creds
+#   tags: never,debug
+#   # tags: always
+#   debug:
+#     msg: |
+#       first-time: "{{ jenkins_first_time_setup }}"
+#       previous-realm: "{{ _j_old_realm }}"
+#       current-realm: "{{ _j_new_realm }}"
+#       desired-realm: "{{ jenkins_security_realm }}"
+#       username: "{{ jenkins_admin_username }}"
+#       password: "{{ jenkins_admin_password }}"

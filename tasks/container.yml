@@ -1,0 +1,34 @@
+---
+
+# note: can include this with arguments that might be helpful to STOP
+# - include: "container.yml" jenkins_container_state=stopped
+
+- name: update container state
+  docker_container:
+    name: "{{ jenkins_docker_container_name }}"
+    image: "{{ jenkins_docker_image }}:{{ jenkins_version }}"
+    published_ports:
+      - "{{ jenkins_port }}:8080"
+    volumes:
+      - "{{ jenkins_home }}:/var/jenkins_home"
+    env:
+      JAVA_OPTS: "{{ jenkins_java_opts }}"
+    state: "{{ jenkins_container_state | d('started') }}"
+    auto_remove: "{{ jenkins_container_autoremove | d(false) | bool }}"
+  register: container_result
+  # when: jenkins_docker_expose_port
+  notify: wait_for_jenkins
+
+# - name: Container is running (without ingress port)
+#   docker_container:
+#     name: "{{ jenkins_docker_container_name }}"
+#     image: "{{ jenkins_docker_image }}:{{ jenkins_version }}"
+#     expose: "8080"
+#     volumes:
+#       - "{{ jenkins_home }}:/var/jenkins_home"
+#     env:
+#       JAVA_OPTS: "{{ jenkins_java_opts }}"
+#   register: container_result
+#   when: not jenkins_docker_expose_port
+
+- meta: flush_handlers
